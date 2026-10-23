@@ -1,12 +1,31 @@
+import os
+import io
+import datetime
 import discord
 from discord.ext import commands
 from discord import app_commands
 import chat_exporter
-import io
-import datetime
+from flask import Flask
+from threading import Thread
+
+# --- KEEP-ALIVE SERVER FOR RENDER ---
+app = Flask('')
+
+@app.route('/')
+def home():
+    return "Bot is active and running!"
+
+def run_web():
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host='0.0.0.0', port=port)
+
+def keep_alive():
+    t = Thread(target=run_web)
+    t.start()
 
 # --- BOT CONFIGURATION ---
-TOKEN = "YOUR_DISCORD_BOT_TOKEN"
+# Load token securely from Render Environment Variables
+TOKEN = os.getenv("DISCORD_TOKEN")
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -42,12 +61,10 @@ class PaymentModal(discord.ui.Modal):
         await interaction.response.defer(ephemeral=True)
         guild = interaction.guild
 
-        # Get or create 'Buy Tickets' Category
         ticket_category = discord.utils.get(guild.categories, name="Buy Tickets")
         if not ticket_category:
             ticket_category = await guild.create_category("Buy Tickets")
 
-        # Channel Permissions: Only the buyer and admins can see it
         overwrites = {
             guild.default_role: discord.PermissionOverwrite(read_messages=False),
             interaction.user: discord.PermissionOverwrite(read_messages=True, send_messages=True, attach_files=True),
@@ -62,7 +79,6 @@ class PaymentModal(discord.ui.Modal):
             topic=f"Order by {interaction.user.name} | User ID: {interaction.user.id}"
         )
 
-        # Build Purchase Ticket Overview Embed
         embed = discord.Embed(
             title="🛒 New Purchase Order",
             description=f"Welcome {interaction.user.mention}! A staff member will process your order shortly.",
@@ -105,7 +121,6 @@ class BuyItemModal(discord.ui.Modal):
         self.add_item(self.item_details)
 
     async def on_submit(self, interaction: discord.Interaction):
-        # Trigger Modal 2 (Payment Details) right after submitting Modal 1
         await interaction.response.send_modal(
             PaymentModal(
                 item_name=self.item_name.value,
@@ -124,7 +139,7 @@ class TicketLaunchView(discord.ui.View):
         await interaction.response.send_modal(BuyItemModal())
 
 
-# --- TICKET CONTROL PANEL (Inside the channel) ---
+# --- TICKET CONTROL PANEL ---
 class TicketControlView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
@@ -132,16 +147,10 @@ class TicketControlView(discord.ui.View):
     @discord.ui.button(label="Close Order", style=discord.ButtonStyle.red, emoji="🔒", custom_id="close_buy_ticket")
     async def close_ticket(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.send_message("⚙️ Generating HTML transcript and closing order...", ephemeral=True)
-
         channel = interaction.channel
 
-        # Generate HTML Transcript
         transcript_html = await chat_exporter.export(
-            channel,
-            limit=None,
-            tz_info="UTC",
-            military_time=False,
-            bot=bot
+            channel, limit=None, tz_info="UTC", military_time=False, bot=bot
         )
 
         if transcript_html is None:
@@ -153,7 +162,6 @@ class TicketControlView(discord.ui.View):
             filename=f"transcript-{channel.name}.html"
         )
 
-        # Parse Buyer User ID from channel topic
         user_id = None
         if channel.topic and "User ID: " in channel.topic:
             try:
@@ -168,7 +176,6 @@ class TicketControlView(discord.ui.View):
             timestamp=datetime.datetime.now(datetime.timezone.utc)
         )
 
-        # Send HTML transcript via DM
         if user_id:
             user = interaction.guild.get_member(user_id) or await bot.fetch_user(user_id)
             if user:
@@ -224,4 +231,10 @@ async def setup_shop(interaction: discord.Interaction):
     await interaction.channel.send(embed=embed, view=TicketLaunchView())
     await interaction.response.send_message("Shop panel sent successfully!", ephemeral=True)
 
-bot.run(TOKEN)
+
+if __name__ == "__main__":
+    # Start the keep-alive server so Render Web Service stays healthy
+    keep_alive()
+    # Run the Discord bot
+    bot.run(TOKEN)
+    
